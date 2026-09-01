@@ -1,14 +1,39 @@
+import os
+import shutil
 from pathlib import Path
 
 import cv2
 import fitz
-import pytesseract
 import numpy as np
+import pytesseract
+
+from app.config import settings
 
 
-TESSERACT_PATH = r"D:\Program Files\Tesseract-OCR\tesseract.exe"
+def configure_tesseract():
+    cmd = settings.tesseract_cmd
+    if cmd and Path(cmd).exists():
+        pytesseract.pytesseract.tesseract_cmd = str(cmd)
+    elif shutil.which("tesseract"):
+        pytesseract.pytesseract.tesseract_cmd = "tesseract"
+    else:
+        # Fallback set string so error is raised on execution if missing
+        pytesseract.pytesseract.tesseract_cmd = str(cmd)
 
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+
+configure_tesseract()
+
+
+def verify_tesseract_installed() -> bool:
+    """
+    Check if Tesseract OCR executable is available and functioning.
+    """
+    cmd = pytesseract.pytesseract.tesseract_cmd
+    if cmd and Path(cmd).exists():
+        return True
+    if shutil.which("tesseract"):
+        return True
+    return False
 
 
 SUPPORTED_IMAGE_EXTENSIONS = {
@@ -16,6 +41,7 @@ SUPPORTED_IMAGE_EXTENSIONS = {
     ".jpeg",
     ".png",
 }
+
 
 
 def preprocess_image(image):
@@ -56,12 +82,19 @@ def extract_text_from_image(file_path: str) -> str:
 
     processed_image = preprocess_image(image)
 
-    text = pytesseract.image_to_string(
-        processed_image,
-        config="--psm 6",
-    )
+    try:
+        text = pytesseract.image_to_string(
+            processed_image,
+            config="--psm 6",
+        )
+    except pytesseract.TesseractNotFoundError as err:
+        raise RuntimeError(
+            "Tesseract OCR is not installed or path is incorrect. "
+            f"Expected at: {pytesseract.pytesseract.tesseract_cmd}"
+        ) from err
 
     return text.strip()
+
 
 
 def extract_text_from_pdf(file_path: str) -> str:
