@@ -1,6 +1,7 @@
 import re
 from datetime import date, datetime
 from typing import Any
+from rapidfuzz.fuzz import ratio
 
 
 REQUIRED_DOCUMENTS = {
@@ -11,6 +12,196 @@ REQUIRED_DOCUMENTS = {
     "PHOTOGRAPH",
 }
 
+def normalize_name(name: str | None) -> str:
+    """
+    Normalize a person's name before comparison.
+    """
+
+    if not name:
+        return ""
+
+    normalized = name.upper().strip()
+
+    normalized = re.sub(
+        r"[^A-Z\s]",
+        " ",
+        normalized,
+    )
+
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        normalized,
+    )
+
+    return normalized.strip()
+
+def calculate_name_similarity(
+    name1: str | None,
+    name2: str | None,
+) -> float:
+    """
+    Calculate name similarity between 0 and 100.
+    """
+
+    normalized_name1 = normalize_name(
+        name1
+    )
+
+    normalized_name2 = normalize_name(
+        name2
+    )
+
+    if not normalized_name1 or not normalized_name2:
+        return 0.0
+
+    return round(
+        ratio(
+            normalized_name1,
+            normalized_name2,
+        ),
+        2,
+    )
+
+def compare_names(
+    name1: str | None,
+    name2: str | None,
+    document_type: str | None = None,
+) -> dict:
+    """
+    Compare two names and return status and similarity.
+    """
+
+    similarity = calculate_name_similarity(
+        name1,
+        name2,
+    )
+
+    if similarity >= 90:
+        status = "pass"
+    elif similarity >= 75:
+        status = "warning"
+    else:
+        status = "mismatch"
+
+    return {
+        "similarity": similarity,
+        "status": status,
+    }
+
+def validate_name_consistency(
+    documents: list[dict],
+) -> list[dict]:
+    """
+    Compare names across all documents using
+    PAN as the canonical identity source.
+    """
+
+    issues = []
+
+    canonical_name = None
+
+    # --------------------------------------------------------
+    # Find PAN name
+    # --------------------------------------------------------
+
+    for document in documents:
+
+        if document.get("document_type") == "PAN":
+
+            fields = document.get(
+                "fields",
+                {}
+            )
+
+            canonical_name = fields.get(
+                "name"
+            )
+
+            if canonical_name:
+                break
+
+    # --------------------------------------------------------
+    # Cannot perform comparison without PAN name
+    # --------------------------------------------------------
+
+    if not canonical_name:
+        return issues
+
+    # --------------------------------------------------------
+    # Compare every other document
+    # --------------------------------------------------------
+
+    for document in documents:
+
+        document_type = document.get(
+            "document_type"
+        )
+
+        if document_type == "PAN":
+            continue
+
+        fields = document.get(
+            "fields",
+            {}
+        )
+
+        document_name = fields.get(
+            "name"
+        )
+
+        if not document_name:
+            continue
+
+        comparison = compare_names(
+            canonical_name,
+            document_name,
+            document_type,
+        )
+
+        similarity = comparison[
+            "similarity"
+        ]
+
+        if comparison["status"] == "warning":
+
+            issues.append(
+                create_issue(
+                    issue_type="NAME_MISMATCH",
+                    severity="warning",
+                    message=(
+                        f"Name differs slightly between PAN "
+                        f"and {document_type.replace('_', ' ').title()} "
+                        f"({similarity}% similarity)."
+                    ),
+                    recommendation=(
+                        "Verify the spelling and ensure both "
+                        "documents belong to the same applicant."
+                    ),
+                    document_type=document_type,
+                )
+            )
+
+        elif comparison["status"] == "mismatch":
+
+            issues.append(
+                create_issue(
+                    issue_type="NAME_MISMATCH",
+                    severity="error",
+                    message=(
+                        f"Name does not match between PAN "
+                        f"and {document_type.replace('_', ' ').title()} "
+                        f"({similarity}% similarity)."
+                    ),
+                    recommendation=(
+                        "Verify the applicant's identity and "
+                        "upload the correct document."
+                    ),
+                    document_type=document_type,
+                )
+            )
+
+    return issues
 
 def create_issue(
     issue_type: str,
@@ -388,9 +579,8 @@ def validate_application(
             continue
 
         issues.extend(
-            validate_document(
-                document_type,
-                fields,
+            validate_name_consistency(
+                documents
             )
         )
 
