@@ -205,8 +205,27 @@ async def verify_document_direct(
     file_path = UPLOAD_DIR / safe_filename
     file_path.write_bytes(file_bytes)
 
-    # Execute verification pipeline
-    result = verify_single_document(str(file_path), filename)
+    # Execute verification pipeline safely
+    try:
+        result = verify_single_document(str(file_path), filename)
+    except Exception as exc:
+        result = {
+            "status": "INVALID",
+            "score": 0,
+            "document_type": "UNKNOWN",
+            "confidence": 0.0,
+            "fields": {},
+            "checks": [
+                {
+                    "name": "OCR Processing",
+                    "passed": False,
+                    "message": f"Processing failed: {str(exc)}"
+                }
+            ],
+            "warnings": [f"Error during document analysis: {str(exc)}"],
+            "disclaimer": "Automated preliminary verification error."
+        }
+
     result["id"] = doc_id
     result["filename"] = filename
     result["timestamp"] = str(Path(file_path).stat().st_mtime)

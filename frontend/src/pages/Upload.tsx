@@ -62,10 +62,22 @@ export default function Upload({ onVerificationComplete }: UploadProps) {
         onVerificationComplete({ type: "application", data: result });
       }
     } catch (err: any) {
-      const msg =
-        err?.response?.data?.detail ||
-        err?.message ||
-        "Verification failed. Please ensure the backend server is running and try again.";
+      console.error("Verification error:", err);
+      let msg = "Verification failed.";
+      if (err?.response?.data?.detail) {
+        msg =
+          typeof err.response.data.detail === "string"
+            ? err.response.data.detail
+            : JSON.stringify(err.response.data.detail);
+      } else if (err?.message) {
+        msg = err.message;
+      }
+
+      if (msg.includes("Network Error") || msg.includes("ECONNREFUSED")) {
+        msg =
+          "Network Error: Unable to reach FastAPI backend server. Please verify that the backend server is running on port 8000 (e.g. run `uvicorn app.main:app --port 8000 --reload` in the backend folder).";
+      }
+
       setErrorMessage(msg);
     } finally {
       setIsProcessing(false);
