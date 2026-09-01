@@ -1,3 +1,5 @@
+// VeriDoc document verification checklist
+
 import {
     CheckCircle2,
     Circle,
