@@ -42,12 +42,19 @@ export interface ApplicationVerificationResult {
   issues: any[];
 }
 
+const getBaseURL = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  // Use current host or default to localhost:8000/api
+  if (typeof window !== "undefined" && window.location.hostname) {
+    return `http://${window.location.hostname}:8000/api`;
+  }
+  return "http://localhost:8000/api";
+};
+
 const api = axios.create({
-  baseURL:
-    import.meta.env.VITE_API_URL || "http://localhost:8000/api",
-  headers: {
-    "Content-Type": "application/json",
-  },
+  baseURL: getBaseURL(),
 });
 
 export async function verifySingleDocument(
@@ -56,14 +63,10 @@ export async function verifySingleDocument(
   const formData = new FormData();
   formData.append("file", file);
 
+  // Let browser/Axios automatically set Content-Type header with multipart boundary
   const response = await api.post<SingleVerificationResult>(
     "/documents/verify",
-    formData,
-    {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    }
+    formData
   );
 
   return response.data;
@@ -76,14 +79,10 @@ export async function uploadDocuments(files: File[]) {
     formData.append("files", file);
   });
 
+  // Let browser/Axios automatically set Content-Type header with multipart boundary
   const response = await api.post(
     "/documents/upload",
-    formData,
-    {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    }
+    formData
   );
 
   return response.data;
