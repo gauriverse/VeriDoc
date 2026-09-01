@@ -35,14 +35,15 @@ def extract_pan_fields(ocr_text: str) -> dict[str, Any]:
         fields["date_of_birth"] = dates[0]
 
     # Name extraction heuristic: lines after Govt or Income Tax headers
+    ignored_keywords = {"INCOME", "TAX", "DEPARTMENT", "GOVT", "INDIA", "PERMANENT", "ACCOUNT", "NUMBER", "FATHER"}
     lines = [line.strip() for line in ocr_text.splitlines() if line.strip()]
-    for i, line in enumerate(lines):
-        if "INCOME TAX" in line.upper() or "GOVT OF INDIA" in line.upper():
-            continue
-        # Look for full uppercase name line without digits/symbols
-        if re.fullmatch(r"[A-Z\s]{3,40}", line) and "DEPARTMENT" not in line.upper() and "GOVT" not in line.upper():
+    for line in lines:
+        line_words = set(line.upper().split())
+        if re.fullmatch(r"[A-Z\s]{3,40}", line) and not line_words.intersection(ignored_keywords):
             fields["name"] = line
             break
+
+
 
     return fields
 
