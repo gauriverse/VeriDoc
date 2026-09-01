@@ -2,12 +2,13 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.models.application import Application
 from app.models.database import get_db
 from app.models.document import Document
+from app.utils.hashing import calculate_sha256
 
 
 router = APIRouter(
@@ -37,6 +38,7 @@ def generate_document_id() -> str:
 @router.post("/upload")
 async def upload_documents(
     files: Annotated[list[UploadFile], File(...)],
+    application_id: Annotated[str | None, Form()] = None,
     db: Session = Depends(get_db),
 ):
     if not files:
@@ -45,24 +47,49 @@ async def upload_documents(
             detail="No files were uploaded.",
         )
 
-    application_id = generate_application_id()
+    # ---------------------------------------------------------
+    # Find existing application or create a new one
+    # ---------------------------------------------------------
 
-    application = Application(
-        application_id=application_id,
-        status="created",
-    )
+    if application_id:
+        application = (
+            db.query(Application)
+            .filter(
+                Application.application_id == application_id
+            )
+            .first()
+        )
 
-    db.add(application)
-    db.commit()
-    db.refresh(application)
+        if not application:
+            raise HTTPException(
+                status_code=404,
+                detail="Application not found.",
+            )
+
+    else:
+        application_id = generate_application_id()
+
+        application = Application(
+            application_id=application_id,
+            status="created",
+        )
+
+        db.add(application)
+        db.commit()
+        db.refresh(application)
 
     uploaded_documents = []
+
+    # ---------------------------------------------------------
+    # Process each uploaded file
+    # ---------------------------------------------------------
 
     for file in files:
         filename = file.filename or ""
 
         extension = Path(filename).suffix.lower()
 
+        # Validate extension
         if extension not in ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=400,
@@ -72,6 +99,7 @@ async def upload_documents(
                 ),
             )
 
+        # Read file
         file_bytes = await file.read()
 
         if not file_bytes:
@@ -79,6 +107,42 @@ async def upload_documents(
                 status_code=400,
                 detail=f"File '{filename}' is empty.",
             )
+
+        # -----------------------------------------------------
+        # SHA-256
+        # -----------------------------------------------------
+
+        file_hash = calculate_sha256(file_bytes)
+
+        # -----------------------------------------------------
+        # Duplicate detection
+        # -----------------------------------------------------
+
+        duplicate = (
+            db.query(Document)
+            .filter(
+                Document.application_id == application.id,
+                Document.file_hash == file_hash,
+            )
+            .first()
+        )
+
+        if duplicate:
+            uploaded_documents.append(
+                {
+                    "id": duplicate.document_id,
+                    "filename": duplicate.filename,
+                    "size": len(file_bytes),
+                    "status": "duplicate",
+                    "message": "Duplicate document detected.",
+                }
+            )
+
+            continue
+
+        # -----------------------------------------------------
+        # Save file
+        # -----------------------------------------------------
 
         document_id = generate_document_id()
 
@@ -88,12 +152,16 @@ async def upload_documents(
 
         file_path.write_bytes(file_bytes)
 
+        # -----------------------------------------------------
+        # Save document in database
+        # -----------------------------------------------------
+
         document = Document(
             document_id=document_id,
             application_id=application.id,
             filename=filename,
             file_path=str(file_path),
-            file_hash="",
+            file_hash=file_hash,
             status="uploaded",
         )
 
@@ -106,7 +174,7 @@ async def upload_documents(
                 "id": document.document_id,
                 "filename": document.filename,
                 "size": len(file_bytes),
-                "status": document.status,
+                "status": "uploaded",
             }
         )
 
