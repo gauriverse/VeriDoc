@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.models.application import Application
 from app.models.database import get_db
 from app.models.document import Document
+from app.services.quality_service import analyze_image_quality
 from app.utils.hashing import calculate_sha256
 
 
@@ -54,9 +55,7 @@ async def upload_documents(
     if application_id:
         application = (
             db.query(Application)
-            .filter(
-                Application.application_id == application_id
-            )
+            .filter(Application.application_id == application_id)
             .first()
         )
 
@@ -152,6 +151,11 @@ async def upload_documents(
 
         file_path.write_bytes(file_bytes)
 
+        quality_result = None
+
+        if extension in {".jpg", ".jpeg", ".png"}:
+            quality_result = analyze_image_quality(str(file_path))
+
         # -----------------------------------------------------
         # Save document in database
         # -----------------------------------------------------
@@ -175,6 +179,7 @@ async def upload_documents(
                 "filename": document.filename,
                 "size": len(file_bytes),
                 "status": "uploaded",
+                "quality": quality_result,
             }
         )
 
