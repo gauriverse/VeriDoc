@@ -1,126 +1,221 @@
-def calculate_readiness_score(
+from app.services.ai_service import (
+    classify_document,
+    extract_fields,
+)
+from app.services.ocr_service import extract_text
+from app.services.validation_service import (
+    validate_application,
+)
+from app.services.scoring_service import (
+    calculate_readiness_score,
+)
+
+
+def verify_application(
     documents: list[dict],
-    issues: list[dict],
 ) -> dict:
     """
-    Calculate application readiness score out of 100.
-
-    Weight:
-    Required documents  - 30
-    Document validity   - 25
-    Consistency         - 25
-    Quality             - 10
-    Duplicates          - 10
+    Run the complete document verification pipeline.
     """
 
-    score = 100
+    processed_documents = []
 
-    missing_documents = sum(
+    for document in documents:
+
+        file_path = document["file_path"]
+        filename = document["filename"]
+
+        # -----------------------------
+        # OCR
+        # -----------------------------
+
+        try:
+            ocr_text = extract_text(file_path)
+
+        except Exception as exc:
+
+            processed_documents.append(
+                {
+                    "id": document["id"],
+                    "filename": filename,
+                    "type": "UNKNOWN",
+                    "status": "failed",
+                    "confidence": 0.0,
+                    "fields": {},
+                    "issues": [
+                        {
+                            "type": "OCR_FAILED",
+                            "severity": "error",
+                            "message": str(exc),
+                            "recommendation": (
+                                "Upload a clearer document."
+                            ),
+                        }
+                    ],
+                }
+            )
+
+            continue
+
+        # -----------------------------
+        # Classification
+        # -----------------------------
+
+        classification = classify_document(
+            ocr_text
+        )
+
+        document_type = classification[
+            "document_type"
+        ]
+
+        confidence = classification[
+            "confidence"
+        ]
+
+        # -----------------------------
+        # Field extraction
+        # -----------------------------
+
+        fields = extract_fields(
+            ocr_text,
+            document_type,
+        )
+
+        processed_documents.append(
+            {
+                "id": document["id"],
+                "filename": filename,
+                "type": document_type,
+                "status": "processed",
+                "confidence": confidence,
+                "fields": fields,
+                "ocr_text": ocr_text,
+                "issues": [],
+            }
+        )
+
+    # -----------------------------
+    # Validation
+    # -----------------------------
+
+    validation_documents = [
+        {
+            "document_type": document["type"],
+            "fields": document["fields"],
+        }
+        for document in processed_documents
+        if document["type"] != "UNKNOWN"
+    ]
+
+    issues = validate_application(
+        validation_documents
+    )
+
+    # -----------------------------
+    # Attach issues
+    # -----------------------------
+
+    for issue in issues:
+
+        document_type = issue.get(
+            "document_type"
+        )
+
+        if not document_type:
+            continue
+
+        for document in processed_documents:
+
+            if document["type"] == document_type:
+
+                document["issues"].append(
+                    issue
+                )
+
+    # -----------------------------
+    # Determine document status
+    # -----------------------------
+
+    for document in processed_documents:
+
+        document_issues = document["issues"]
+
+        has_error = any(
+            issue["severity"] == "error"
+            for issue in document_issues
+        )
+
+        has_warning = any(
+            issue["severity"] == "warning"
+            for issue in document_issues
+        )
+
+        if has_error:
+            document["status"] = "failed"
+
+        elif has_warning:
+            document["status"] = "warning"
+
+        else:
+            document["status"] = "verified"
+
+        document.pop(
+            "ocr_text",
+            None,
+        )
+
+    # -----------------------------
+    # Readiness score
+    # -----------------------------
+
+    score_result = calculate_readiness_score(
+        processed_documents,
+        issues,
+    )
+
+    # -----------------------------
+    # Summary
+    # -----------------------------
+
+    verified = sum(
+        1
+        for document in processed_documents
+        if document["status"] == "verified"
+    )
+
+    warnings = sum(
+        1
+        for document in processed_documents
+        if document["status"] == "warning"
+    )
+
+    failed = sum(
+        1
+        for document in processed_documents
+        if document["status"] == "failed"
+    )
+
+    missing = sum(
         1
         for issue in issues
         if issue["type"] == "MISSING_DOCUMENT"
     )
 
-    validity_errors = sum(
-        1
-        for issue in issues
-        if issue["type"] in {
-            "DOCUMENT_EXPIRED",
-            "INVALID_PAN_FORMAT",
-            "INVALID_AADHAAR_FORMAT",
-        }
-    )
-
-    consistency_errors = sum(
-        1
-        for issue in issues
-        if issue["type"] == "NAME_MISMATCH"
-    )
-
-    missing_fields = sum(
-        1
-        for issue in issues
-        if issue["type"] == "MISSING_FIELD"
-    )
-
-    duplicate_errors = sum(
-        1
-        for issue in issues
-        if issue["type"] == "DUPLICATE_DOCUMENT"
-    )
-
-    # Required documents: maximum 30 point deduction
-    required_penalty = min(
-        30,
-        missing_documents * 6,
-    )
-
-    # Validity: maximum 25 point deduction
-    validity_penalty = min(
-        25,
-        validity_errors * 8,
-    )
-
-    # Consistency: maximum 25 point deduction
-    consistency_penalty = min(
-        25,
-        consistency_errors * 12,
-    )
-
-    # Missing fields affect consistency/data completeness
-    field_penalty = min(
-        10,
-        missing_fields * 3,
-    )
-
-    # Duplicate penalty
-    duplicate_penalty = min(
-        10,
-        duplicate_errors * 10,
-    )
-
-    score -= (
-        required_penalty
-        + validity_penalty
-        + consistency_penalty
-        + field_penalty
-        + duplicate_penalty
-    )
-
-    score = max(
-        0,
-        min(100, score),
-    )
-
-    if score >= 85:
-        status = "ready"
-    elif score >= 70:
-        status = "needs_review"
-    elif score >= 50:
-        status = "incomplete"
-    else:
-        status = "high_risk"
+    # -----------------------------
+    # Final result
+    # -----------------------------
 
     return {
-        "score": score,
-        "status": status,
-        "breakdown": {
-            "required_documents": max(
-                0,
-                30 - required_penalty,
-            ),
-            "document_validity": max(
-                0,
-                25 - validity_penalty,
-            ),
-            "consistency": max(
-                0,
-                25 - consistency_penalty,
-            ),
-            "quality": 10,
-            "duplicates": max(
-                0,
-                10 - duplicate_penalty,
-            ),
+        "readiness_score": score_result["score"],
+        "readiness_status": score_result["status"],
+        "score_breakdown": score_result["breakdown"],
+        "summary": {
+            "verified": verified,
+            "warnings": warnings,
+            "missing": missing,
+            "failed": failed,
         },
+        "documents": processed_documents,
+        "issues": issues,
     }
