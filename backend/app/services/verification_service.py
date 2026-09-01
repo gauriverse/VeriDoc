@@ -1,14 +1,9 @@
-from app.services.ai_service import (
-    classify_document,
-    extract_fields,
-)
+from app.services.document_detection_service import classify_document
+from app.services.field_extraction_service import extract_fields
 from app.services.ocr_service import extract_text
-from app.services.validation_service import (
-    validate_application,
-)
-from app.services.scoring_service import (
-    calculate_readiness_score,
-)
+from app.services.scoring_service import calculate_readiness_score
+from app.services.validation_service import validate_application, validate_document
+
 
 
 def verify_application(
@@ -219,3 +214,102 @@ def verify_application(
         "documents": processed_documents,
         "issues": issues,
     }
+
+
+def verify_single_document(file_path: str, filename: str) -> dict:
+    """
+    Run full verification pipeline for a single uploaded document.
+    Returns status (VERIFIED, REVIEW_REQUIRED, INVALID), score, checks, and fields.
+    """
+    try:
+        ocr_text = extract_text(file_path)
+    except Exception as exc:
+        return {
+            "status": "INVALID",
+            "score": 0,
+            "document_type": "UNKNOWN",
+            "confidence": 0.0,
+            "fields": {},
+            "checks": [
+                {
+                    "name": "OCR Quality",
+                    "passed": False,
+                    "message": f"Unable to extract text: {str(exc)}"
+                }
+            ],
+            "warnings": ["OCR text extraction failed. Please upload a clearer document."]
+        }
+
+    classification = classify_document(ocr_text)
+    doc_type = classification["document_type"]
+    confidence = classification["confidence"]
+
+    fields = extract_fields(ocr_text, doc_type)
+    issues = validate_document(doc_type, fields)
+
+    # Compute checks
+    checks = [
+        {
+            "name": "OCR Quality",
+            "passed": len(ocr_text.strip()) > 10,
+            "message": "Readable text extracted" if len(ocr_text.strip()) > 10 else "Low text quality"
+        },
+        {
+            "name": "Document Classification",
+            "passed": doc_type != "UNKNOWN",
+            "message": f"Document identified as {doc_type}" if doc_type != "UNKNOWN" else "Document type could not be confidently identified"
+        }
+    ]
+
+    has_errors = any(i.get("severity") == "error" for i in issues)
+    has_warnings = any(i.get("severity") == "warning" for i in issues)
+
+    # Required field presence check
+    extracted_values = [v for v in fields.values() if v is not None]
+    fields_found = len(extracted_values) > 0
+    checks.append({
+        "name": "Required Fields",
+        "passed": fields_found,
+        "message": f"{len(extracted_values)} key fields extracted" if fields_found else "No key fields extracted"
+    })
+
+    # Pattern check
+    checks.append({
+        "name": "Format Validation",
+        "passed": not has_errors,
+        "message": "All format patterns passed" if not has_errors else "Format validation issues detected"
+    })
+
+    # Calculate score
+    score = 100
+    if doc_type == "UNKNOWN":
+        score -= 30
+    if not fields_found:
+        score -= 25
+    if has_errors:
+        score -= 35
+    elif has_warnings:
+        score -= 15
+    score = max(0, min(100, score))
+
+    if score >= 80 and not has_errors and doc_type != "UNKNOWN":
+        status = "VERIFIED"
+    elif score >= 50:
+        status = "REVIEW_REQUIRED"
+    else:
+        status = "INVALID"
+
+    warnings_list = [i.get("message") for i in issues if i.get("message")]
+    if doc_type == "UNKNOWN":
+        warnings_list.append("Document type could not be confidently identified.")
+
+    return {
+        "status": status,
+        "score": score,
+        "document_type": doc_type,
+        "confidence": confidence,
+        "fields": fields,
+        "checks": checks,
+        "warnings": warnings_list,
+        "disclaimer": "This result is an automated preliminary verification and does not guarantee legal authenticity."
+    }
